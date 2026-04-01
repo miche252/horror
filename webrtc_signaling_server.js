@@ -6,13 +6,38 @@ const http = require("http");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
+const ROOM_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 console.log('🚀 Starting WebRTC Signaling Server...');
 console.log(`📡 Port: ${PORT}`);
 console.log(`📁 Working directory: ${process.cwd()}`);
+console.log(`🧹 Room cleanup: every ${CLEANUP_INTERVAL_MS/60000}min, max age ${ROOM_MAX_AGE_MS/60000}min`);
 
-/** @type {Map<string, {hostId: string|null, peers: Map<string, any}>} */
+/** @type {Map<string, {hostId: string|null, peers: Map<string, any>, lastActivity: number}>} */
 const rooms = new Map();
+
+// Periodic cleanup of inactive rooms
+setInterval(() => {
+  const now = Date.now();
+  let cleanedCount = 0;
+  
+  for (const [code, room] of rooms.entries()) {
+    // Delete if room is empty or inactive for too long
+    if (room.peers.size === 0 || (now - room.lastActivity) > ROOM_MAX_AGE_MS) {
+      rooms.delete(code);
+      cleanedCount++;
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`🧹 Cleaned up ${cleanedCount} inactive rooms. Active rooms: ${rooms.size}`);
+  }
+  
+  // Log memory usage
+  const memUsage = process.memoryUsage();
+  console.log(`💾 Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB heap, ${rooms.size} rooms`);
+}, CLEANUP_INTERVAL_MS);
 
 function generateRoomCode() {
   // 6-digit numeric code
@@ -42,7 +67,10 @@ function sendToPeer(room, targetPeerId, obj) {
 function cleanupRoomIfEmpty(code) {
   const r = rooms.get(code);
   if (!r) return;
-  if (r.peers.size === 0) rooms.delete(code);
+  if (r.peers.size === 0) {
+    rooms.delete(code);
+    console.log(`🗑️ Room ${code} deleted (empty)`);
+  }
 }
 
 const server = http.createServer((req, res) => {
@@ -80,7 +108,7 @@ wss.on("connection", (ws, req) => {
       let newCode = generateRoomCode();
       while (rooms.has(newCode)) newCode = generateRoomCode();
 
-      const newRoom = { hostId: peerId, peers: new Map() };
+      const newRoom = { hostId: peerId, peers: new Map(), lastActivity: Date.now() };
       rooms.set(newCode, newRoom);
       newRoom.peers.set(peerId, { ws });
       ws._room = newCode;
@@ -105,6 +133,7 @@ wss.on("connection", (ws, req) => {
       }
       
       targetRoom.peers.set(peerId, { ws });
+      targetRoom.lastActivity = Date.now(); // Update activity timestamp
       ws._room = code;
 
       // Inform joiner with existing peers list
@@ -169,6 +198,9 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "relay") {
       if (!currentRoomCode) return;
       if (!room) return;
+
+      // Update activity timestamp on relay messages
+      room.lastActivity = Date.now();
 
       // Forward payload as-is to everyone else in room.
       broadcast(room, peerId, { 

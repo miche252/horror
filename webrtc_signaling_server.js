@@ -9,10 +9,22 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 const ROOM_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Set to true for verbose logging (development only)
+const DEBUG = process.env.DEBUG === 'true' || false;
+
+function log(msg) {
+  if (DEBUG) console.log(msg);
+}
+
+function logInfo(msg) {
+  console.log(msg);
+}
+
 console.log('🚀 Starting WebRTC Signaling Server...');
 console.log(`📡 Port: ${PORT}`);
 console.log(`📁 Working directory: ${process.cwd()}`);
 console.log(`🧹 Room cleanup: every ${CLEANUP_INTERVAL_MS/60000}min, max age ${ROOM_MAX_AGE_MS/60000}min`);
+console.log(`🔇 Debug mode: ${DEBUG ? 'ON' : 'OFF'} (set DEBUG=true for verbose logs)`);
 
 /** @type {Map<string, {hostId: string|null, peers: Map<string, any>, lastActivity: number}>} */
 const rooms = new Map();
@@ -30,13 +42,8 @@ setInterval(() => {
     }
   }
   
-  if (cleanedCount > 0) {
-    console.log(`🧹 Cleaned up ${cleanedCount} inactive rooms. Active rooms: ${rooms.size}`);
-  }
-  
-  // Log memory usage
   const memUsage = process.memoryUsage();
-  console.log(`💾 Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB heap, ${rooms.size} rooms`);
+  console.log(`🧹 Cleaned ${cleanedCount} rooms. Active: ${rooms.size} | Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(1)}MB`);
 }, CLEANUP_INTERVAL_MS);
 
 function generateRoomCode() {
@@ -81,13 +88,11 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws, req) => {
-  console.log('🔌 New WebSocket connection from:', req.socket.remoteAddress);
-  console.log('   Headers:', req.headers);
   const peerId = `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
   ws._peerId = peerId;
   ws._room = null;
 
-  console.log(`👤 Peer connected: ${peerId}`);
+  log(`🔌 Peer connected: ${peerId} from ${req.socket.remoteAddress}`);
   send(ws, { type: "hello", peer_id: peerId });
 
   ws.on("message", (data) => {
@@ -114,7 +119,7 @@ wss.on("connection", (ws, req) => {
       ws._room = newCode;
 
       send(ws, { type: "room_created", room: newCode, host: true });
-      console.log(`🏠 Room created: ${newCode} by ${peerId}`);
+      logInfo(`🏠 Room ${newCode} created by ${peerId.slice(-6)}`);
       return;
     }
 
@@ -147,7 +152,7 @@ wss.on("connection", (ws, req) => {
       
       // Notify others
       broadcast(targetRoom, peerId, { type: "peer_joined", peer_id: peerId });
-      console.log(`👋 Peer ${peerId} joined room: ${code}`);
+      logInfo(`👋 ${peerId.slice(-6)} joined room ${code} (${targetRoom.peers.size} players)`);
       return;
     }
 
@@ -161,7 +166,7 @@ wss.on("connection", (ws, req) => {
           sdp: msg.sdp,
           sdp_type: msg.sdp_type
         });
-        console.log(`📤 OFFER from ${peerId} to ${target}`);
+        log(`📤 OFFER ${peerId.slice(-6)} → ${target.slice(-6)}`);
       }
       return;
     }
@@ -175,7 +180,7 @@ wss.on("connection", (ws, req) => {
           sdp: msg.sdp,
           sdp_type: msg.sdp_type
         });
-        console.log(`📤 ANSWER from ${peerId} to ${target}`);
+        log(`📤 ANSWER ${peerId.slice(-6)} → ${target.slice(-6)}`);
       }
       return;
     }
@@ -213,7 +218,7 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    console.log(`👋 Peer disconnected: ${ws._peerId}`);
+    log(`👋 Peer disconnected: ${ws._peerId.slice(-6)}`);
     const code = ws._room;
     if (!code) return;
     const room = rooms.get(code);
@@ -226,7 +231,7 @@ wss.on("connection", (ws, req) => {
     if (room.hostId === ws._peerId && room.peers.size > 0) {
       const newHost = room.peers.keys().next().value;
       room.hostId = newHost;
-      console.log(`👑 New host assigned: ${newHost}`);
+      log(`👑 Host changed to ${newHost.slice(-6)}`);
     }
     
     cleanupRoomIfEmpty(code);

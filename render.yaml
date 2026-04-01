@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: horror-webrtc-signaling
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 8080
+    healthCheckPath: /
